@@ -89,5 +89,4 @@ tk.Label(root, text="(Copy password manually)", font=("Arial", 10), bg="#1e1e1e"
 
 root.after(1000, check_for_update)
 
-
 root.mainloop()
