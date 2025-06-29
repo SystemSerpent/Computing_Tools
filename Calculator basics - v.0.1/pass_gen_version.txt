@@ -1,0 +1,5 @@
+VERSION DETAILS -- SMART PASSWORD GENERATOR --
+
+V.1.0 released in June 29th 2025 by SystemSerpent <github.com/systemserpent>
+This tool helps to maximize the password stengths. Simple but useful.
+Suggest to use if concern about letting traces.
