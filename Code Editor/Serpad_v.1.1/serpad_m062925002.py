@@ -1,194 +1,199 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, font, messagebox
-from chlorophyll import CodeView
-from pygments.lexers import guess_lexer_for_filename, get_lexer_by_name
-import os
+from tkinter import filedialog, messagebox, simpledialog
+import os, sys, time
+from cryptography.fernet import Fernet
 
-class EditorTab:
-    def __init__(self, parent, file_path=None, theme="light", font_family="Consolas", font_size=12):
-        self.frame = ttk.Frame(parent)
-        self.file_path = file_path
-        self.lexer = get_lexer_by_name("text")
+APP_NAME = "Serpad"
+BACKUP_DIR = os.path.join(os.path.expanduser("~"), ".minicodepad_backups")
+RECENT_MAX = 5
 
-        if file_path:
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                self.lexer = guess_lexer_for_filename(file_path, content)
-            except:
-                content = ""
-        else:
-            content = ""
+os.makedirs(BACKUP_DIR, exist_ok=True)
 
-        self.codeview = CodeView(self.frame,
-                                 lexer=self.lexer,
-                                 color_scheme="monokai" if theme == "dark" else "solarized_light",
-                                 font=(font_family, font_size))
-        self.codeview.insert("1.0", content)
-        self.codeview.pack(fill="both", expand=True)
+# Create a Fernet key from a password string (derive key safely)
+import base64
+import hashlib
 
-    def get_content(self):
-        return self.codeview.get("1.0", "end-1c")
+def create_key(password: str) -> bytes:
+    # Derive a 32-byte key from the password using SHA256 and base64 encode for Fernet
+    digest = hashlib.sha256(password.encode()).digest()
+    return base64.urlsafe_b64encode(digest)
 
-    def set_font(self, family, size):
-        self.codeview.configure(font=(family, size))
+def encrypt_text(text: str, key: bytes) -> bytes:
+    return Fernet(key).encrypt(text.encode())
 
-    def set_theme(self, theme):
-        scheme = "monokai" if theme == "dark" else "solarized_light"
-        self.codeview.set_color_scheme(scheme)
+def decrypt_text(data: bytes, key: bytes) -> str:
+    return Fernet(key).decrypt(data).decode()
 
-
-class Serpad:
+class SecureEditor:
     def __init__(self, root):
         self.root = root
-        self.root.title("Serpad")
-        self.root.geometry("900x600")
+        self.root.title(APP_NAME)
+        self.file_path = None
+        self.encrypted = False
+        self.key = None
+        self.recent_files = []
 
-        self.tabs = []
-        self.font_family = "Consolas"
-        self.font_size = 12
-        self.theme = "light"
+        self.text = tk.Text(root, font=("Consolas", 12), undo=True, wrap="none")
+        self.text.pack(fill=tk.BOTH, expand=True)
+        self.status = tk.StringVar()
+        tk.Label(root, textvariable=self.status, anchor="w").pack(fill=tk.X)
+        self.text.bind("<KeyRelease>", self.update_status)
 
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True)
+        menu = tk.Menu(root)
+        root.config(menu=menu)
 
-        self.status = ttk.Label(root, text="Ready", anchor="w")
-        self.status.pack(side="bottom", fill="x")
+        fileMenu = tk.Menu(menu, tearoff=0)
+        fileMenu.add_command(label="Open", command=self.open_file)
+        fileMenu.add_command(label="Open Encrypted", command=self.open_encrypted)
+        fileMenu.add_command(label="Save", command=self.save_file)
+        fileMenu.add_command(label="Save As", command=self.save_as)
+        fileMenu.add_separator()
+        self.recentMenu = tk.Menu(fileMenu, tearoff=0)
+        fileMenu.add_cascade(label="Recent Files", menu=self.recentMenu)
+        fileMenu.add_separator()
+        fileMenu.add_command(label="Quit", command=self.quit)
+        menu.add_cascade(label="File", menu=fileMenu)
 
-        self.build_menu()
-        self.add_tab()
+        editMenu = tk.Menu(menu, tearoff=0)
+        editMenu.add_command(label="Find & Replace", command=self.find_replace)
+        menu.add_cascade(label="Edit", menu=editMenu)
 
-    def build_menu(self):
-        menu = tk.Menu(self.root)
-        self.root.config(menu=menu)
+        # Auto backup every 5 minutes (300000 ms)
+        root.after(300000, self.auto_backup)
 
-        file_menu = tk.Menu(menu, tearoff=0)
-        file_menu.add_command(label="New", command=self.add_tab)
-        file_menu.add_command(label="Open", command=self.open_file)
-        file_menu.add_command(label="Save", command=self.save_file)
-        file_menu.add_command(label="Save As", command=self.save_file_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.root.quit)
-        menu.add_cascade(label="File", menu=file_menu)
+    def update_status(self, event=None):
+        line, col = self.text.index("insert").split(".")
+        self.status.set(f"Line {line}, Column {col}")
 
-        edit_menu = tk.Menu(menu, tearoff=0)
-        edit_menu.add_command(label="Find/Replace", command=self.find_replace)
-        edit_menu.add_command(label="Change Font...", command=self.change_font)
-        menu.add_cascade(label="Edit", menu=edit_menu)
-
-        view_menu = tk.Menu(menu, tearoff=0)
-        view_menu.add_command(label="Toggle Theme", command=self.toggle_theme)
-        menu.add_cascade(label="View", menu=view_menu)
-
-    def add_tab(self, file_path=None):
-        tab = EditorTab(self.notebook, file_path, self.theme, self.font_family, self.font_size)
-        self.tabs.append(tab)
-        name = os.path.basename(file_path) if file_path else "Untitled"
-        self.notebook.add(tab.frame, text=name)
-        self.notebook.select(tab.frame)
-        self.status.config(text=f"Opened: {name}")
-
-    def current_tab(self):
-        selected = self.notebook.select()
-        for tab in self.tabs:
-            if str(tab.frame) == selected:
-                return tab
-        return None
+    def auto_backup(self):
+        content = self.text.get("1.0", tk.END)
+        name = "untitled" if not self.file_path else os.path.basename(self.file_path)
+        bak_path = os.path.join(BACKUP_DIR, f"{name}-{int(time.time())}.bak")
+        try:
+            with open(bak_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            print(f"Backup failed: {e}")
+        self.root.after(300000, self.auto_backup)
 
     def open_file(self):
         path = filedialog.askopenfilename()
-        if path:
-            self.add_tab(path)
+        if not path:
+            return
+        if path.endswith(".enc"):
+            self.open_encrypted(path)
+        else:
+            self._load_file(path, encrypted=False)
 
     def save_file(self):
-        tab = self.current_tab()
-        if tab and tab.file_path:
-            try:
-                with open(tab.file_path, "w", encoding="utf-8") as f:
-                    f.write(tab.get_content())
-                self.status.config(text=f"Saved: {tab.file_path}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Could not save file:\n{e}")
+        if self.file_path:
+            self._save(self.file_path)
         else:
-            self.save_file_as()
+            self.save_as()
 
-    def save_file_as(self):
-        tab = self.current_tab()
-        if tab:
-            path = filedialog.asksaveasfilename(defaultextension=".txt")
-            if path:
-                try:
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(tab.get_content())
-                    tab.file_path = path
-                    idx = self.notebook.index(tab.frame)
-                    self.notebook.tab(idx, text=os.path.basename(path))
-                    self.status.config(text=f"Saved as: {path}")
-                except Exception as e:
-                    messagebox.showerror("Error", f"Could not save file:\n{e}")
+    def save_as(self):
+        path = filedialog.asksaveasfilename(defaultextension=".txt")
+        if not path:
+            return
+        self._save(path)
 
-    def change_font(self):
-        win = tk.Toplevel(self.root)
-        win.title("Change Font")
-        win.geometry("300x100")
+    def _save(self, path):
+        content = self.text.get("1.0", tk.END)
+        try:
+            if self.encrypted:
+                data = encrypt_text(content, self.key)
+                path = path if path.endswith(".enc") else path + ".enc"
+                with open(path, "wb") as f:
+                    f.write(data)
+            else:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            self.file_path = path
+            self.add_recent(path)
+            self.root.title(f"{APP_NAME} - {os.path.basename(path)}")
+            messagebox.showinfo("Saved", f"Saved to {self.file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save:\n{e}")
 
-        tk.Label(win, text="Font Family:").pack()
-        fam_var = tk.StringVar(value=self.font_family)
-        fam_menu = ttk.Combobox(win, textvariable=fam_var, values=sorted(font.families()), state="readonly")
-        fam_menu.pack()
+    def open_encrypted(self, path=None):
+        if not path:
+            path = filedialog.askopenfilename(filetypes=[("Encrypted Files", "*.enc")])
+            if not path:
+                return
+        password = simpledialog.askstring("Password", "Enter decryption password:", show="*")
+        if not password:
+            messagebox.showerror("Error", "No password entered")
+            return
+        self.encrypted = True
+        self.key = create_key(password)
+        self._load_file(path, encrypted=True)
 
-        tk.Label(win, text="Font Size:").pack()
-        size_var = tk.IntVar(value=self.font_size)
-        size_spin = ttk.Spinbox(win, from_=6, to=48, textvariable=size_var)
-        size_spin.pack()
-
-        def apply_font():
-            self.font_family = fam_var.get()
-            self.font_size = size_var.get()
-            for tab in self.tabs:
-                tab.set_font(self.font_family, self.font_size)
-            win.destroy()
-
-        ttk.Button(win, text="Apply", command=apply_font).pack(pady=5)
-
-    def toggle_theme(self):
-        self.theme = "dark" if self.theme == "light" else "light"
-        for tab in self.tabs:
-            tab.set_theme(self.theme)
-        self.status.config(text=f"Theme changed to {self.theme.capitalize()}")
+    def _load_file(self, path, encrypted=False):
+        try:
+            if encrypted:
+                with open(path, "rb") as f:
+                    data = f.read()
+                content = decrypt_text(data, self.key)
+            else:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            self.text.delete("1.0", tk.END)
+            self.text.insert(tk.END, content)
+            self.file_path = path
+            self.encrypted = encrypted
+            self.add_recent(path)
+            self.root.title(f"{APP_NAME} - {os.path.basename(path)}")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed opening file:\n{e}")
 
     def find_replace(self):
-        tab = self.current_tab()
-        if not tab:
-            return
+        fr = tk.Toplevel(self.root)
+        fr.title("Find & Replace")
+        fr.transient(self.root)
+        fr.resizable(False, False)
+        tk.Label(fr, text="Find:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        tk.Label(fr, text="Replace:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
 
-        win = tk.Toplevel(self.root)
-        win.title("Find and Replace")
-        win.geometry("300x120")
-
-        tk.Label(win, text="Find:").pack()
-        find_var = tk.StringVar()
-        find_entry = tk.Entry(win, textvariable=find_var)
-        find_entry.pack()
-
-        tk.Label(win, text="Replace:").pack()
-        replace_var = tk.StringVar()
-        replace_entry = tk.Entry(win, textvariable=replace_var)
-        replace_entry.pack()
+        find_entry = tk.Entry(fr, width=30)
+        repl_entry = tk.Entry(fr, width=30)
+        find_entry.grid(row=0, column=1, padx=5, pady=5)
+        repl_entry.grid(row=1, column=1, padx=5, pady=5)
 
         def do_replace():
-            content = tab.codeview.get("1.0", "end-1c")
-            new_content = content.replace(find_var.get(), replace_var.get())
-            tab.codeview.delete("1.0", "end")
-            tab.codeview.insert("1.0", new_content)
-            win.destroy()
+            self.text.tag_remove("match", "1.0", tk.END)
+            search = find_entry.get()
+            replace = repl_entry.get()
+            if not search:
+                messagebox.showwarning("Warning", "Find field cannot be empty.")
+                return
+            idx = "1.0"
+            while True:
+                idx = self.text.search(search, idx, nocase=1, stopindex=tk.END)
+                if not idx:
+                    break
+                lastidx = f"{idx}+{len(search)}c"
+                self.text.delete(idx, lastidx)
+                self.text.insert(idx, replace)
+                idx = lastidx
+            fr.destroy()
 
-        ttk.Button(win, text="Replace All", command=do_replace).pack(pady=5)
+        tk.Button(fr, text="Replace All", command=do_replace).grid(row=2, column=0, columnspan=2, pady=10)
 
-def main():
-    root = tk.Tk()
-    Serpad(root)
-    root.mainloop()
+    def add_recent(self, path):
+        if path in self.recent_files:
+            self.recent_files.remove(path)
+        self.recent_files.insert(0, path)
+        self.recent_files = self.recent_files[:RECENT_MAX]
+
+        self.recentMenu.delete(0, tk.END)
+        for p in self.recent_files:
+            self.recentMenu.add_command(label=p, command=lambda pp=p: self._load_file(pp, pp.endswith(".enc")))
+
+    def quit(self):
+        if messagebox.askokcancel("Quit", "Are you sure you want to quit?"):
+            self.root.destroy()
 
 if __name__ == "__main__":
-    main()
+    root = tk.Tk()
+    app = SecureEditor(root)
+    root.mainloop()
